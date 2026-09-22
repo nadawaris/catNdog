@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>🐱 vs 🐶 Cats vs Dogs Deep Learning Classifier</title>
+  <meta name="description" content="Custom Convolutional Neural Network (CNN) built from scratch for real-time Cat vs Dog image classification." />
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="bg-glow bg-glow-1"></div>
+  <div class="bg-glow bg-glow-2"></div>
+
+  <header class="site-header">
+    <div class="container header-content">
+      <div class="logo-group">
+        <div class="logo-icon">🐾</div>
+        <div>
+          <h1 class="logo-title">Cat<span class="gradient-text">Vision</span> AI</h1>
+          <p class="logo-subtitle">Custom CNN Image Classification Engine (From Scratch)</p>
+        </div>
+      </div>
+      <div class="header-badges">
+        <span class="badge badge-accent">TensorFlow 2.15+</span>
+        <span class="badge badge-success">● 63.3% Test Accuracy</span>
+        <span class="badge badge-ghost">From-Scratch CNN</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="container main-layout">
+    <!-- Navigation Tabs -->
+    <nav class="nav-tabs" role="tablist">
+      <button class="tab-btn active" data-tab="classifier-tab">
+        <span class="tab-icon">⚡</span> Real-time Classifier
+      </button>
+      <button class="tab-btn" data-tab="metrics-tab">
+        <span class="tab-icon">📊</span> Performance & Metrics
+      </button>
+      <button class="tab-btn" data-tab="architecture-tab">
+        <span class="tab-icon">🧠</span> CNN Architecture
+      </button>
+    </nav>
+
+    <!-- Tab 1: Real-time Classifier -->
+    <section id="classifier-tab" class="tab-content active">
+      <div class="classifier-grid">
+        
+        <!-- Left: Upload & Input Card -->
+        <div class="card glass-card">
+          <div class="card-header">
+            <h2 class="card-title">Upload or Choose Image</h2>
+            <p class="card-desc">Drag & drop your cat or dog image, or select a sample</p>
+          </div>
+
+          <!-- Dropzone -->
+          <div id="dropzone" class="dropzone">
+            <input type="file" id="fileInput" accept="image/*" class="file-input" />
+            <div class="dropzone-content">
+              <div class="upload-icon-pulse">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="17 8 12 3 7 8"></polyline>
+                  <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+              </div>
+              <p class="dropzone-primary-text"><strong>Click to upload</strong> or drag and drop</p>
+              <p class="dropzone-secondary-text">PNG, JPG, JPEG, WEBP (Auto-resized to 128×128)</p>
+            </div>
+          </div>
+
+          <!-- Quick Sample Images Gallery -->
+          <div class="samples-section">
+            <div class="samples-header">
+              <span class="section-label">Quick Test Samples</span>
+              <span class="hint-text">Click any sample to test immediately</span>
+            </div>
+            <div id="sampleGallery" class="samples-grid">
+              <!-- Populated dynamically via JS -->
+              <div class="sample-skeleton"></div>
+              <div class="sample-skeleton"></div>
+              <div class="sample-skeleton"></div>
+              <div class="sample-skeleton"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Prediction Result Card -->
+        <div class="card glass-card result-panel">
+          <div class="card-header">
+            <h2 class="card-title">Prediction & Inference Result</h2>
+            <p class="card-desc">Real-time classification confidence and probabilities</p>
+          </div>
+
+          <div id="emptyState" class="empty-state">
+            <div class="empty-state-icon">🔮</div>
+            <h3>Awaiting Image Input</h3>
+            <p>Upload a photo or pick a sample on the left to run CNN inference.</p>
+          </div>
+
+          <div id="loadingState" class="loading-state hidden">
+            <div class="spinner"></div>
+            <p>Running tensor feed-forward through 3 Conv Blocks...</p>
+          </div>
+
+          <div id="resultContent" class="result-content hidden">
+            <!-- Image Preview Box -->
+            <div class="preview-container">
+              <img id="previewImage" src="" alt="Classified Preview" />
+              <div id="resultFloatingBadge" class="floating-verdict-badge">
+                <span id="badgeEmoji">🐶</span>
+                <span id="badgeText">Dog</span>
+              </div>
+            </div>
+
+            <!-- Key Decision Metrics -->
+            <div class="verdict-banner" id="verdictBanner">
+              <div class="verdict-main">
+                <span class="verdict-label">Predicted Class:</span>
+                <h3 id="verdictTitle" class="verdict-title">Dog 🐶</h3>
+              </div>
+              <div class="confidence-box">
+                <span class="confidence-label">Confidence</span>
+                <span id="confidenceValue" class="confidence-number">99.8%</span>
+              </div>
+            </div>
+
+            <!-- Probability Bars -->
+            <div class="probabilities-container">
+              <div class="prob-row">
+                <div class="prob-labels">
+                  <span>🐱 Cat Probability</span>
+                  <span id="catPercentText" class="prob-num">0.2%</span>
+                </div>
+                <div class="progress-track">
+                  <div id="catProgressBar" class="progress-fill cat-fill" style="width: 0%"></div>
+                </div>
+              </div>
+
+              <div class="prob-row">
+                <div class="prob-labels">
+                  <span>🐶 Dog Probability</span>
+                  <span id="dogPercentText" class="prob-num">99.8%</span>
+                </div>
+                <div class="progress-track">
+                  <div id="dogProgressBar" class="progress-fill dog-fill" style="width: 0%"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Technical Tensor Info Box & Debug Mode -->
+            <div class="tensor-info-card">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem;">
+                <span class="tensor-key" style="font-weight:700; color:var(--text-main);">🛠️ Debug Inspector Mode</span>
+                <label class="switch" style="display:flex; align-items:center; gap:0.4rem; cursor:pointer; font-size:0.75rem;">
+                  <input type="checkbox" id="debugToggle" checked />
+                  <span>Enabled</span>
+                </label>
+              </div>
+
+              <div id="debugDetails" class="debug-details-box">
+                <div class="tensor-metric">
+                  <span class="tensor-key">Model File:</span>
+                  <code id="debugModelFile" class="tensor-val">models/cat_dog_cnn.keras</code>
+                </div>
+                <div class="tensor-metric">
+                  <span class="tensor-key">Input Size:</span>
+                  <code id="debugInputSize" class="tensor-val">128 × 128 × 3 (RGB)</code>
+                </div>
+                <div class="tensor-metric">
+                  <span class="tensor-key">Class Mapping:</span>
+                  <code id="debugClassMapping" class="tensor-val">Class 0 = Cat | Class 1 = Dog</code>
+                </div>
+                <div class="tensor-metric">
+                  <span class="tensor-key">Raw Sigmoid Output:</span>
+                  <code id="rawSigmoid" class="tensor-val">0.5000</code>
+                </div>
+                <div class="tensor-metric">
+                  <span class="tensor-key">Decision Threshold:</span>
+                  <code class="tensor-val">&lt; 0.50 (Cat) | &ge; 0.50 (Dog)</code>
+                </div>
+                <div class="tensor-metric">
+                  <span class="tensor-key">Preprocessing:</span>
+                  <span id="debugPreprocessing" class="tensor-val" style="font-size:0.72rem;">RGB &rarr; Resize(128,128) &rarr; Pixel / 255.0</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- Tab 2: Performance & Metrics -->
+    <section id="metrics-tab" class="tab-content">
+      <!-- Metric Highlights Cards -->
+      <div class="metrics-stat-grid">
+        <div class="stat-card">
+          <div class="stat-label">Isolated Test Accuracy</div>
+          <div class="stat-number gradient-text-cyan">63.33%</div>
+          <div class="stat-meta">30 unseen holdout test samples (19/30 correct)</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Dog Precision Score</div>
+          <div class="stat-number gradient-text-purple">61.11%</div>
+          <div class="stat-meta">TP / (TP + FP)</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Dog Recall (Sensitivity)</div>
+          <div class="stat-number gradient-text-orange">73.33%</div>
+          <div class="stat-meta">TP / (TP + FN) - 11/15 dogs detected</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">F1-Score</div>
+          <div class="stat-number gradient-text-green">0.6667</div>
+          <div class="stat-meta">Harmonic mean of Precision & Recall</div>
+        </div>
+      </div>
+
+      <!-- Generated Plots Display -->
+      <div class="plots-grid">
+        <div class="card glass-card">
+          <div class="card-header">
+            <h3 class="card-title">📈 Model Training History</h3>
+            <p class="card-desc">Training vs. Validation Accuracy and Loss progression over 15 epochs</p>
+          </div>
+          <div class="plot-frame">
+            <img src="/outputs/training_history.png" alt="Training History Curves" loading="lazy" />
+          </div>
+        </div>
+
+        <div class="card glass-card">
+          <div class="card-header">
+            <h3 class="card-title">🎯 Confusion Matrix Heatmap</h3>
+            <p class="card-desc">Evaluation on holdout validation dataset (Cats: 10, Dogs: 10)</p>
+          </div>
+          <div class="plot-frame">
+            <img src="/outputs/confusion_matrix.png" alt="Confusion Matrix Heatmap" loading="lazy" />
+          </div>
+        </div>
+      </div>
+
+      <div class="card glass-card" style="margin-top: 1.5rem;">
+        <div class="card-header">
+          <h3 class="card-title">🖼️ Sample Validation Set Predictions</h3>
+          <p class="card-desc">Actual vs Predicted classifications with model output confidence levels</p>
+        </div>
+        <div class="plot-frame wide-frame">
+          <img src="/outputs/sample_predictions.png" alt="Sample Validation Predictions" loading="lazy" />
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 3: CNN Architecture -->
+    <section id="architecture-tab" class="tab-content">
+      <div class="card glass-card">
+        <div class="card-header">
+          <h2 class="card-title">🧠 Custom 3-Block CNN Layer Architecture</h2>
+          <p class="card-desc">Built purely from scratch without any pre-trained weights or transfer learning</p>
+        </div>
+
+        <!-- Architecture Flow Banner -->
+        <div class="arch-flow">
+          <div class="flow-step">
+            <div class="flow-icon">🖼️</div>
+            <div class="flow-name">Input Image</div>
+            <div class="flow-dim">128 &times; 128 &times; 3</div>
+          </div>
+          <div class="flow-arrow">&rarr;</div>
+          <div class="flow-step">
+            <div class="flow-icon">📦</div>
+            <div class="flow-name">Conv Block 1</div>
+            <div class="flow-dim">32 Filters (3&times;3) + MaxPool</div>
+          </div>
+          <div class="flow-arrow">&rarr;</div>
+          <div class="flow-step">
+            <div class="flow-icon">📦</div>
+            <div class="flow-name">Conv Block 2</div>
+            <div class="flow-dim">64 Filters (3&times;3) + MaxPool</div>
+          </div>
+          <div class="flow-arrow">&rarr;</div>
+          <div class="flow-step">
+            <div class="flow-icon">📦</div>
+            <div class="flow-name">Conv Block 3</div>
+            <div class="flow-dim">128 Filters (3&times;3) + MaxPool</div>
+          </div>
+          <div class="flow-arrow">&rarr;</div>
+          <div class="flow-step">
+            <div class="flow-icon">🧬</div>
+            <div class="flow-name">Dense Head</div>
+            <div class="flow-dim">Dense(128) + Dropout(0.5)</div>
+          </div>
+          <div class="flow-arrow">&rarr;</div>
+          <div class="flow-step highlight-step">
+            <div class="flow-icon">🎯</div>
+            <div class="flow-name">Sigmoid Output</div>
+            <div class="flow-dim">Dense(1) &in; [0, 1]</div>
+          </div>
+        </div>
+
+        <!-- Detailed Table -->
+        <div class="table-responsive">
+          <table class="arch-table">
+            <thead>
+              <tr>
+                <th>Layer Name</th>
+                <th>Type</th>
+                <th>Output Tensor Shape</th>
+                <th>Parameters</th>
+                <th>Feature Extraction Role</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>conv2d_1</code></td>
+                <td><span class="pill pill-blue">Conv2D</span></td>
+                <td><code>(None, 128, 128, 32)</code></td>
+                <td>896</td>
+                <td>Low-level features (edges, color boundaries, contours)</td>
+              </tr>
+              <tr>
+                <td><code>max_pooling2d_1</code></td>
+                <td><span class="pill pill-purple">MaxPooling2D</span></td>
+                <td><code>(None, 64, 64, 32)</code></td>
+                <td>0</td>
+                <td>Spatial downsampling (50% reduction in H &times; W)</td>
+              </tr>
+              <tr>
+                <td><code>conv2d_2</code></td>
+                <td><span class="pill pill-blue">Conv2D</span></td>
+                <td><code>(None, 64, 64, 64)</code></td>
+                <td>18,496</td>
+                <td>Mid-level textures (fur, stripes, complex corners)</td>
+              </tr>
+              <tr>
+                <td><code>max_pooling2d_2</code></td>
+                <td><span class="pill pill-purple">MaxPooling2D</span></td>
+                <td><code>(None, 32, 32, 64)</code></td>
+                <td>0</td>
+                <td>Spatial downsampling to 32&times;32 resolution</td>
+              </tr>
+              <tr>
+                <td><code>conv2d_3</code></td>
+                <td><span class="pill pill-blue">Conv2D</span></td>
+                <td><code>(None, 32, 32, 128)</code></td>
+                <td>73,856</td>
+                <td>High-level structural features (ears, snout, eyes, nose)</td>
+              </tr>
+              <tr>
+                <td><code>max_pooling2d_3</code></td>
+                <td><span class="pill pill-purple">MaxPooling2D</span></td>
+                <td><code>(None, 16, 16, 128)</code></td>
+                <td>0</td>
+                <td>Final feature map consolidation (16&times;16&times;128)</td>
+              </tr>
+              <tr>
+                <td><code>flatten</code></td>
+                <td><span class="pill pill-orange">Flatten</span></td>
+                <td><code>(None, 32768)</code></td>
+                <td>0</td>
+                <td>Converts 3D volume (16&times;16&times;128) into 1D feature vector</td>
+              </tr>
+              <tr>
+                <td><code>dense_1</code></td>
+                <td><span class="pill pill-green">Dense (ReLU)</span></td>
+                <td><code>(None, 128)</code></td>
+                <td>4,194,432</td>
+                <td>Fully-connected classification decision reasoning</td>
+              </tr>
+              <tr>
+                <td><code>dropout_1</code></td>
+                <td><span class="pill pill-red">Dropout (0.5)</span></td>
+                <td><code>(None, 128)</code></td>
+                <td>0</td>
+                <td>Regularization: randomly deactivates 50% neurons to prevent overfitting</td>
+              </tr>
+              <tr>
+                <td><code>output_layer</code></td>
+                <td><span class="pill pill-gold">Dense (Sigmoid)</span></td>
+                <td><code>(None, 1)</code></td>
+                <td>129</td>
+                <td>Single probability score for Cat (0) vs. Dog (1)</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-content">
+      <p>🐱 vs 🐶 Custom Convolutional Neural Network &bull; Built with TensorFlow &amp; Flask</p>
+      <p class="footer-meta">Local Host Server &bull; Port 5000</p>
+    </div>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

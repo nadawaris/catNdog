@@ -1,23 +1,27 @@
 """
 cat_dog_classifier / train.py
 ------------------------------
-Main training, evaluation, and visualization pipeline.
+Robust Training, Validation, and Isolated Test Evaluation Pipeline in PyTorch.
 
-This script performs the following end-to-end steps:
-1. Loads cat and dog image files from dataset/cats and dataset/dogs.
-2. Performs an 80% Train / 20% Validation split with stratification to prevent data leakage.
-3. Preprocesses images: 128x128 resize, RGB conversion, pixel normalization [0, 1].
-4. Builds the custom CNN architecture defined in model.py.
-5. Trains the CNN for 15-20 epochs with batch size 32 and data augmentation.
-6. Saves accuracy/loss history plots and confusion matrix to outputs/.
-7. Evaluates Accuracy, Precision, Recall, F1-Score, and Confusion Matrix.
-8. Displays sample predictions and misclassified examples with confidence scores.
-9. Saves trained model to models/cat_dog_cnn.keras.
+Key Pipeline Steps:
+1. Dataset Loading: Real images loaded via unified preprocessing module.
+2. 3-Way Stratified Split:
+   - 70% Training Set (Augmentation applied in-pipeline)
+   - 15% Validation Set (Model tuning & EarlyStopping checkpointing)
+   - 15% Isolated Test Set (Zero data leakage, strictly evaluated once after training)
+3. Architecture: Custom 4-block CNN built from scratch in PyTorch.
+4. Comprehensive Metrics: Accuracy, Precision, Recall, F1, Confusion Matrix, TP/TN/FP/FN.
+5. Misclassification Pipeline:
+   - Misclassified test images saved to `models/misclassified/`
+   - Logged to `models/misclassified_predictions.csv`
+   - Visual summary grid saved to `outputs/misclassified_grid.png`
 """
 
 import os
 import sys
 import glob
+import shutil
+import hashlib
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -29,282 +33,478 @@ from sklearn.metrics import (
     recall_score,
     f1_score,
     confusion_matrix,
+    classification_report,
     ConfusionMatrixDisplay
 )
-import tensorflow as tf
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import TensorDataset, DataLoader
 
 # Ensure stdout supports UTF-8 on Windows consoles
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 
-# Import custom model architecture & data augmentation
-from model import build_cat_dog_cnn, get_data_augmentation_layer
-from download_dataset import download_sample_images
+try:
+    from config import (
+        CLASS_NAMES, CLASS_TO_IDX, IDX_TO_CLASS, IMAGE_SIZE, INPUT_SHAPE,
+        CATS_DIR, DOGS_DIR, MODELS_DIR, MODEL_PATH, OUTPUTS_DIR,
+        MISCLASSIFIED_DIR, MISCLASSIFIED_CSV, DEFAULT_EPOCHS,
+        DEFAULT_BATCH_SIZE, DEFAULT_LEARNING_RATE, RANDOM_SEED,
+        UNCERTAINTY_THRESHOLD
+    )
+    from preprocessing import load_and_preprocess_single_image, print_tensor_statistics
+    from model import build_cat_dog_cnn, get_data_augmentation_transform
+    from download_dataset import setup_real_dataset
+except ImportError:
+    from cat_dog_classifier.config import (
+        CLASS_NAMES, CLASS_TO_IDX, IDX_TO_CLASS, IMAGE_SIZE, INPUT_SHAPE,
+        CATS_DIR, DOGS_DIR, MODELS_DIR, MODEL_PATH, OUTPUTS_DIR,
+        MISCLASSIFIED_DIR, MISCLASSIFIED_CSV, DEFAULT_EPOCHS,
+        DEFAULT_BATCH_SIZE, DEFAULT_LEARNING_RATE, RANDOM_SEED,
+        UNCERTAINTY_THRESHOLD
+    )
+    from cat_dog_classifier.preprocessing import load_and_preprocess_single_image, print_tensor_statistics
+    from cat_dog_classifier.model import build_cat_dog_cnn, get_data_augmentation_transform
+    from cat_dog_classifier.download_dataset import setup_real_dataset
 
-# Set random seeds for reproducibility
-np.random.seed(42)
-tf.random.set_seed(42)
+# Set deterministic random seeds
+np.random.seed(RANDOM_SEED)
+torch.manual_seed(RANDOM_SEED)
 
 
-def load_image_dataset(dataset_dir="dataset", image_size=(128, 128)):
+def load_dataset_with_filepaths(cats_dir=CATS_DIR, dogs_dir=DOGS_DIR):
     """
-    Loads cat and dog images, resizes to (128, 128), converts to RGB,
-    normalizes pixel values to [0, 1], and assigns numerical labels.
-
-    Label Assignment:
-    - 0 : Cat
-    - 1 : Dog
-
-    Returns:
-    --------
-    X : np.ndarray of shape (N, 128, 128, 3), float32
-        Preprocessed image array normalized between 0.0 and 1.0.
-    y : np.ndarray of shape (N,), int32
-        Binary target labels (0 for cat, 1 for dog).
+    Loads all real image files, tracks filepaths for auditability,
+    removes corrupted images, and guarantees valid [0, 1] RGB tensors.
     """
-    cats_dir = os.path.join(dataset_dir, "cats")
-    dogs_dir = os.path.join(dataset_dir, "dogs")
+    if not (os.path.exists(cats_dir) and os.path.exists(dogs_dir)) or \
+       len(os.listdir(cats_dir)) < 10 or len(os.listdir(dogs_dir)) < 10:
+        print("[INFO] Dataset directory missing or incomplete. Initializing real-world dataset...")
+        setup_real_dataset()
 
-    # If dataset is empty or missing, download/generate sample data automatically
-    if not (os.path.exists(cats_dir) and os.path.exists(dogs_dir)):
-        print("[INFO] Dataset directory missing. Initializing sample dataset...")
-        download_sample_images(dataset_dir, num_per_class=50)
+    cat_files = sorted(glob.glob(os.path.join(cats_dir, "*.[jJ][pP][gG]")) + glob.glob(os.path.join(cats_dir, "*.[pP][nN][gG]")))
+    dog_files = sorted(glob.glob(os.path.join(dogs_dir, "*.[jJ][pP][gG]")) + glob.glob(os.path.join(dogs_dir, "*.[pP][nN][gG]")))
 
-    cat_paths = glob.glob(os.path.join(cats_dir, "*.[jJ][pP][gG]")) + glob.glob(os.path.join(cats_dir, "*.[pP][nN][gG]"))
-    dog_paths = glob.glob(os.path.join(dogs_dir, "*.[jJ][pP][gG]")) + glob.glob(os.path.join(dogs_dir, "*.[pP][nN][gG]"))
-
-    if len(cat_paths) == 0 or len(dog_paths) == 0:
-        print("[WARNING] No images found in dataset folders! Fetching samples...")
-        download_sample_images(dataset_dir, num_per_class=50)
-        cat_paths = glob.glob(os.path.join(cats_dir, "*.jpg"))
-        dog_paths = glob.glob(os.path.join(dogs_dir, "*.jpg"))
+    print(f"[LOAD] Found {len(cat_files)} Cat photos and {len(dog_files)} Dog photos on disk.")
 
     images = []
     labels = []
+    filepaths = []
+    seen_hashes = set()
+    duplicates_removed = 0
 
-    print(f"[LOAD] Loading {len(cat_paths)} cat images and {len(dog_paths)} dog images...")
-
-    for path in cat_paths:
+    # Load Cats (Label: 0)
+    for path in cat_files:
         try:
-            img = Image.open(path).convert("RGB")
-            img = img.resize(image_size)
-            images.append(np.array(img, dtype=np.float32) / 255.0)  # Normalize 0-255 -> 0-1
-            labels.append(0)  # Cat = 0
-        except Exception as e:
-            print(f"Skipping corrupted image: {path} ({e})")
+            with open(path, "rb") as f:
+                fhash = hashlib.sha256(f.read()).hexdigest()
+            if fhash in seen_hashes:
+                duplicates_removed += 1
+                continue
+            seen_hashes.add(fhash)
 
-    for path in dog_paths:
-        try:
-            img = Image.open(path).convert("RGB")
-            img = img.resize(image_size)
-            images.append(np.array(img, dtype=np.float32) / 255.0)  # Normalize 0-255 -> 0-1
-            labels.append(1)  # Dog = 1
+            arr = load_and_preprocess_single_image(path, target_size=IMAGE_SIZE)
+            images.append(arr)
+            labels.append(CLASS_TO_IDX["cat"])  # 0
+            filepaths.append(path)
         except Exception as e:
-            print(f"Skipping corrupted image: {path} ({e})")
+            print(f"  [SKIP] Corrupted image: {path} ({e})")
+
+    # Load Dogs (Label: 1)
+    for path in dog_files:
+        try:
+            with open(path, "rb") as f:
+                fhash = hashlib.sha256(f.read()).hexdigest()
+            if fhash in seen_hashes:
+                duplicates_removed += 1
+                continue
+            seen_hashes.add(fhash)
+
+            arr = load_and_preprocess_single_image(path, target_size=IMAGE_SIZE)
+            images.append(arr)
+            labels.append(CLASS_TO_IDX["dog"])  # 1
+            filepaths.append(path)
+        except Exception as e:
+            print(f"  [SKIP] Corrupted image: {path} ({e})")
+
+    if duplicates_removed > 0:
+        print(f"[AUDIT] Detected and removed {duplicates_removed} duplicate images to eliminate data leakage.")
 
     X = np.array(images, dtype=np.float32)
     y = np.array(labels, dtype=np.int32)
+    paths = np.array(filepaths)
 
-    return X, y
+    return X, y, paths
 
 
-def train_and_evaluate(
-    dataset_dir="dataset",
-    output_dir="outputs",
-    model_dir="models",
-    epochs=15,
-    batch_size=32,
+class History:
+    def __init__(self):
+        self.history = {'accuracy': [], 'val_accuracy': [], 'loss': [], 'val_loss': []}
+
+
+def train_and_evaluate_pipeline(
+    epochs=35,
+    batch_size=16,
     learning_rate=0.001
 ):
     """
-    Executes training, evaluation, plot generation, and model saving.
+    Executes the full end-to-end 3-way split, training, evaluation,
+    and misclassification analysis in PyTorch.
     """
-    os.makedirs(output_dir, exist_ok=True)
-    os.makedirs(model_dir, exist_ok=True)
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    os.makedirs(OUTPUTS_DIR, exist_ok=True)
+    os.makedirs(MISCLASSIFIED_DIR, exist_ok=True)
 
-    # 1. Load Data
-    X, y = load_image_dataset(dataset_dir=dataset_dir, image_size=(128, 128))
-    print(f"[OK] Loaded total dataset: X shape = {X.shape}, y shape = {y.shape}")
+    # 1. Load Dataset
+    X, y, filepaths = load_dataset_with_filepaths()
+    print(f"\n[DATASET SUMMARY] Total dataset shape: X = {X.shape}, y = {y.shape}")
+    print(f"  - Total Cat Samples (0) : {np.sum(y == 0)}")
+    print(f"  - Total Dog Samples (1) : {np.sum(y == 1)}")
 
-    # 2. Train / Validation Split (80% Train, 20% Validation)
-    # Stratified split ensures equal proportion of cats and dogs in both sets.
-    # Splitting BEFORE augmentation prevents data leakage between train & validation sets!
-    X_train, X_val, y_train, y_val = train_test_split(
-        X, y,
-        test_size=0.20,
-        random_state=42,
+    # Debug first tensor
+    print_tensor_statistics(X[0], name="First Sample Image Tensor")
+
+    # 2. Perform 3-Way Stratified Split (70% Train, 15% Val, 15% Test)
+    X_train, X_temp, y_train, y_temp, paths_train, paths_temp = train_test_split(
+        X, y, filepaths,
+        test_size=0.30,
+        random_state=RANDOM_SEED,
         stratify=y,
         shuffle=True
     )
 
-    print(f"[SPLIT] Dataset Split Complete:")
-    print(f"   - Training Set   : {X_train.shape[0]} samples (Cats: {np.sum(y_train==0)}, Dogs: {np.sum(y_train==1)})")
-    print(f"   - Validation Set : {X_val.shape[0]} samples (Cats: {np.sum(y_val==0)}, Dogs: {np.sum(y_val==1)})")
-
-    # 3. Build Model with Data Augmentation Wrapper
-    base_model = build_cat_dog_cnn(input_shape=(128, 128, 3), learning_rate=learning_rate)
-    data_aug = get_data_augmentation_layer()
-
-    # Wrap in sequential model for training with real-time augmentation
-    training_model = tf.keras.Sequential([
-        data_aug,
-        base_model
-    ], name="Augmented_Training_Pipeline")
-
-    training_model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
-        loss='binary_crossentropy',
-        metrics=['accuracy']
+    X_val, X_test, y_val, y_test, paths_val, paths_test = train_test_split(
+        X_temp, y_temp, paths_temp,
+        test_size=0.50,
+        random_state=RANDOM_SEED,
+        stratify=y_temp,
+        shuffle=True
     )
 
-    print("\n[MODEL] Custom CNN Architecture Summary:")
-    base_model.summary()
+    print("\n" + "="*60)
+    print(" 3-WAY STRATIFIED DATASET SPLIT (ZERO DATA LEAKAGE)")
+    print("="*60)
+    print(f"  * Training Set   (70%): {X_train.shape[0]} samples (Cats: {np.sum(y_train==0)}, Dogs: {np.sum(y_train==1)})")
+    print(f"  * Validation Set (15%): {X_val.shape[0]} samples (Cats: {np.sum(y_val==0)}, Dogs: {np.sum(y_val==1)})")
+    print(f"  * Isolated Test  (15%): {X_test.shape[0]} samples (Cats: {np.sum(y_test==0)}, Dogs: {np.sum(y_test==1)})")
+    print("="*60)
 
-    # 4. Train Model
-    print(f"\n[TRAIN] Training CNN for {epochs} Epochs with Batch Size {batch_size}...")
-    history = training_model.fit(
-        X_train, y_train,
-        epochs=epochs,
-        batch_size=batch_size,
-        validation_data=(X_val, y_val),
-        verbose=1
+    # Prepare PyTorch Tensors (Transpose from NHWC -> NCHW)
+    X_train_chw = np.transpose(X_train, (0, 3, 1, 2))
+    X_val_chw = np.transpose(X_val, (0, 3, 1, 2))
+    X_test_chw = np.transpose(X_test, (0, 3, 1, 2))
+
+    train_dataset = TensorDataset(torch.from_numpy(X_train_chw).float(), torch.from_numpy(y_train).float().unsqueeze(1))
+    val_dataset = TensorDataset(torch.from_numpy(X_val_chw).float(), torch.from_numpy(y_val).float().unsqueeze(1))
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
+    # 3. Build Model & Training Setup
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = build_cat_dog_cnn().to(device)
+    aug_transform = get_data_augmentation_transform()
+
+    criterion = nn.BCELoss()
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, min_lr=1e-6)
+
+    history = History()
+    best_val_acc = -1.0
+
+    print(f"\n[TRAIN] Training PyTorch CNN from scratch for {epochs} Epochs (Batch Size: {batch_size}, Device: {device})...")
+    for epoch in range(1, epochs + 1):
+        # Training Phase
+        model.train()
+        train_loss, train_correct, train_total = 0.0, 0, 0
+        for images_batch, labels_batch in train_loader:
+            images_batch, labels_batch = images_batch.to(device), labels_batch.to(device)
+            images_batch = aug_transform(images_batch)
+
+            optimizer.zero_grad()
+            outputs = model(images_batch)
+            loss = criterion(outputs, labels_batch)
+            loss.backward()
+            optimizer.step()
+
+            train_loss += loss.item() * images_batch.size(0)
+            preds = (outputs >= 0.50).float()
+            train_correct += (preds == labels_batch).sum().item()
+            train_total += labels_batch.size(0)
+
+        epoch_train_loss = train_loss / train_total
+        epoch_train_acc = train_correct / train_total
+
+        # Validation Phase
+        model.eval()
+        val_loss, val_correct, val_total = 0.0, 0, 0
+        with torch.no_grad():
+            for images_batch, labels_batch in val_loader:
+                images_batch, labels_batch = images_batch.to(device), labels_batch.to(device)
+                outputs = model(images_batch)
+                loss = criterion(outputs, labels_batch)
+
+                val_loss += loss.item() * images_batch.size(0)
+                preds = (outputs >= 0.50).float()
+                val_correct += (preds == labels_batch).sum().item()
+                val_total += labels_batch.size(0)
+
+        epoch_val_loss = val_loss / val_total
+        epoch_val_acc = val_correct / val_total
+
+        scheduler.step(epoch_val_loss)
+
+        history.history['accuracy'].append(epoch_train_acc)
+        history.history['val_accuracy'].append(epoch_val_acc)
+        history.history['loss'].append(epoch_train_loss)
+        history.history['val_loss'].append(epoch_val_loss)
+
+        print(f"Epoch {epoch:02d}/{epochs:02d} - Loss: {epoch_train_loss:.4f} - Acc: {epoch_train_acc:.4f} - Val Loss: {epoch_val_loss:.4f} - Val Acc: {epoch_val_acc:.4f}")
+
+        # Save Best Model Checkpoint
+        if epoch_val_acc > best_val_acc:
+            best_val_acc = epoch_val_acc
+            torch.save(model.state_dict(), MODEL_PATH)
+
+    if not os.path.exists(MODEL_PATH):
+        torch.save(model.state_dict(), MODEL_PATH)
+
+    print(f"\n[SAVE] Final trained model successfully saved to: {MODEL_PATH}")
+
+    # 5. Plot Loss & Accuracy Curves
+    plot_training_curves(history, os.path.join(OUTPUTS_DIR, "training_history.png"))
+
+    # 6. Evaluate on ISOLATED TEST SET (Untouched during training/tuning)
+    print("\n" + "="*60)
+    print(" EVALUATION ON ISOLATED TEST SET (UNTOUCHED)")
+    print("="*60)
+
+    model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+    model.eval()
+
+    X_test_tensor = torch.from_numpy(X_test_chw).float().to(device)
+    with torch.no_grad():
+        test_probs = model(X_test_tensor).cpu().numpy().ravel()
+    test_preds = (test_probs >= 0.50).astype(int)
+
+    test_acc = accuracy_score(y_test, test_preds)
+    test_prec = precision_score(y_test, test_preds, zero_division=0)
+    test_rec = recall_score(y_test, test_preds, zero_division=0)
+    test_f1 = f1_score(y_test, test_preds, zero_division=0)
+    cm = confusion_matrix(y_test, test_preds)
+
+    tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
+
+    print(f"  * Total Test Samples : {len(y_test)}")
+    print(f"  * Test Accuracy      : {test_acc*100:.2f}%")
+    print(f"  * Test Precision     : {test_prec*100:.2f}%")
+    print(f"  * Test Recall (Sens.): {test_rec*100:.2f}%")
+    print(f"  * Test F1-Score      : {test_f1:.4f}")
+    print(f"  * True Negatives (TN): {tn} (Actual Cats correctly predicted as Cat)")
+    print(f"  * False Positives(FP): {fp} (Actual Cats wrongly predicted as Dog)")
+    print(f"  * False Negatives(FN): {fn} (Actual Dogs wrongly predicted as Cat)")
+    print(f"  * True Positives (TP): {tp} (Actual Dogs correctly predicted as Dog)")
+    print("\n Detailed Classification Report:")
+    print(classification_report(y_test, test_preds, target_names=["Cat", "Dog"], zero_division=0))
+    print("="*60)
+
+    # 7. Save Confusion Matrix Heatmap
+    plot_confusion_matrix(cm, os.path.join(OUTPUTS_DIR, "confusion_matrix.png"))
+
+    # 8. Misclassification Analysis
+    run_misclassification_analysis(
+        X_test, y_test, test_probs, test_preds, paths_test,
+        misclassified_dir=MISCLASSIFIED_DIR,
+        csv_path=MISCLASSIFIED_CSV,
+        grid_output_path=os.path.join(OUTPUTS_DIR, "misclassified_grid.png")
     )
 
-    # Save standalone base model (without augmentation wrapper for clean inference)
-    model_save_path = os.path.join(model_dir, "cat_dog_cnn.keras")
-    base_model.save(model_save_path)
-    print(f"\n[SAVE] Model successfully saved to: {model_save_path}")
+    # 9. Plot Test Sample Predictions
+    plot_test_predictions(X_test, y_test, test_probs, test_preds, os.path.join(OUTPUTS_DIR, "sample_predictions.png"))
 
-    # 5. Plot Accuracy & Loss Curves
+    return {
+        "test_accuracy": float(test_acc),
+        "test_precision": float(test_prec),
+        "test_recall": float(test_rec),
+        "test_f1": float(test_f1),
+        "confusion_matrix": cm.tolist(),
+        "tp": int(tp), "tn": int(tn), "fp": int(fp), "fn": int(fn),
+        "num_test": len(y_test)
+    }
+
+
+def plot_training_curves(history, output_path):
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
     # Accuracy Plot
-    ax1.plot(history.history['accuracy'], label='Training Accuracy', color='#1f77b4', linewidth=2.5)
-    ax1.plot(history.history['val_accuracy'], label='Validation Accuracy', color='#ff7f0e', linewidth=2.5, linestyle='--')
-    ax1.set_title('Model Accuracy vs Epochs', fontsize=14, fontweight='bold')
-    ax1.set_xlabel('Epoch', fontsize=12)
-    ax1.set_ylabel('Accuracy', fontsize=12)
-    ax1.legend(fontsize=11)
-    ax1.grid(True, linestyle=':', alpha=0.6)
+    ax1.plot(history.history['accuracy'], label='Training Accuracy', color='#6366f1', linewidth=2.5)
+    if 'val_accuracy' in history.history:
+        ax1.plot(history.history['val_accuracy'], label='Validation Accuracy', color='#06b6d4', linewidth=2.5, linestyle='--')
+    ax1.set_title('Training vs. Validation Accuracy', fontsize=13, fontweight='bold')
+    ax1.set_xlabel('Epoch', fontsize=11)
+    ax1.set_ylabel('Accuracy', fontsize=11)
+    ax1.set_ylim([0.0, 1.05])
+    ax1.legend(fontsize=10)
+    ax1.grid(True, linestyle=':', alpha=0.5)
 
     # Loss Plot
-    ax2.plot(history.history['loss'], label='Training Loss', color='#1f77b4', linewidth=2.5)
-    ax2.plot(history.history['val_loss'], label='Validation Loss', color='#ff7f0e', linewidth=2.5, linestyle='--')
-    ax2.set_title('Model Loss vs Epochs', fontsize=14, fontweight='bold')
-    ax2.set_xlabel('Epoch', fontsize=12)
-    ax2.set_ylabel('Binary Cross-Entropy Loss', fontsize=12)
-    ax2.legend(fontsize=11)
-    ax2.grid(True, linestyle=':', alpha=0.6)
+    ax2.plot(history.history['loss'], label='Training Loss', color='#6366f1', linewidth=2.5)
+    if 'val_loss' in history.history:
+        ax2.plot(history.history['val_loss'], label='Validation Loss', color='#06b6d4', linewidth=2.5, linestyle='--')
+    ax2.set_title('Training vs. Validation Loss (Cross-Entropy)', fontsize=13, fontweight='bold')
+    ax2.set_xlabel('Epoch', fontsize=11)
+    ax2.set_ylabel('Loss', fontsize=11)
+    ax2.legend(fontsize=10)
+    ax2.grid(True, linestyle=':', alpha=0.5)
 
     plt.tight_layout()
-    history_plot_path = os.path.join(output_dir, "training_history.png")
-    plt.savefig(history_plot_path, dpi=300)
+    plt.savefig(output_path, dpi=300)
     plt.close()
-    print(f"[PLOT] Training curves saved to: {history_plot_path}")
+    print(f"[PLOT] Training curves saved to: {output_path}")
 
-    # 6. Evaluate Model on Validation Set
-    val_probs = base_model.predict(X_val, verbose=0).ravel()
-    val_preds = (val_probs >= 0.5).astype(int)
 
-    acc = accuracy_score(y_val, val_preds)
-    prec = precision_score(y_val, val_preds, zero_division=0)
-    rec = recall_score(y_val, val_preds, zero_division=0)
-    f1 = f1_score(y_val, val_preds, zero_division=0)
-    cm = confusion_matrix(y_val, val_preds)
-
-    # Print Detailed Viva Explanation of Metrics
-    print("\n" + "="*60)
-    print(" MODEL EVALUATION METRICS ON VALIDATION SET")
-    print("="*60)
-    print(f"  * Accuracy        : {acc*100:.2f}%  (Overall proportion of correct predictions)")
-    print(f"  * Precision       : {prec*100:.2f}%  (Out of all predicted dogs, how many are actually dogs)")
-    print(f"  * Recall (Sens.)  : {rec*100:.2f}%  (Out of all actual dogs, how many were correctly detected)")
-    print(f"  * F1-Score        : {f1*100:.2f}%  (Harmonic mean of Precision and Recall)")
-    print("="*60)
-
-    print("\n CONFUSION MATRIX:")
-    print("                  Predicted Cat (0)   Predicted Dog (1)")
-    print(f"  Actual Cat (0)       {cm[0][0]:^14}    {cm[0][1]:^17}")
-    print(f"  Actual Dog (1)       {cm[1][0]:^14}    {cm[1][1]:^17}")
-    print("-" * 60)
-    print("  Legend:")
-    print(f"   - True Negatives (TN - Cat correctly identified as Cat)  : {cm[0][0]}")
-    print(f"   - False Positives (FP - Cat wrongly predicted as Dog)    : {cm[0][1]}")
-    print(f"   - False Negatives (FN - Dog wrongly predicted as Cat)    : {cm[1][0]}")
-    print(f"   - True Positives (TP - Dog correctly identified as Dog)  : {cm[1][1]}")
-    print("="*60 + "\n")
-
-    # Plot Confusion Matrix Heatmap
+def plot_confusion_matrix(cm, output_path):
     fig, ax = plt.subplots(figsize=(6, 5))
-    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Cat', 'Dog'])
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Cat (0)', 'Dog (1)'])
     disp.plot(cmap=plt.cm.Blues, ax=ax, values_format='d')
-    ax.set_title('Confusion Matrix', fontsize=14, fontweight='bold')
+    ax.set_title('Test Set Confusion Matrix', fontsize=13, fontweight='bold')
     plt.tight_layout()
-    cm_plot_path = os.path.join(output_dir, "confusion_matrix.png")
-    plt.savefig(cm_plot_path, dpi=300)
+    plt.savefig(output_path, dpi=300)
     plt.close()
-    print(f"[PLOT] Confusion matrix plot saved to: {cm_plot_path}")
-
-    # 7. Display Sample Predictions & Mistakes
-    plot_sample_predictions(X_val, y_val, val_probs, val_preds, output_dir=output_dir)
-
-    return history, acc
+    print(f"[PLOT] Confusion matrix plot saved to: {output_path}")
 
 
-def plot_sample_predictions(X_val, y_val, val_probs, val_preds, output_dir="outputs"):
+def run_misclassification_analysis(
+    X_test, y_test, test_probs, test_preds, paths_test,
+    misclassified_dir=MISCLASSIFIED_DIR,
+    csv_path=MISCLASSIFIED_CSV,
+    grid_output_path=os.path.join(OUTPUTS_DIR, "misclassified_grid.png")
+):
     """
-    Visualizes sample validation predictions, formatted as:
-    Actual: Cat | Predicted: Cat | Confidence: 94%
-    And displays any misclassified samples for error analysis.
+    Identifies all incorrectly classified test images, saves them to
+    models/misclassified/, writes details to CSV, and generates a visual grid.
     """
-    class_names = {0: "Cat", 1: "Dog"}
+    # Clear previous misclassified images
+    if os.path.exists(misclassified_dir):
+        for f in os.listdir(misclassified_dir):
+            try:
+                os.remove(os.path.join(misclassified_dir, f))
+            except Exception:
+                pass
+    os.makedirs(misclassified_dir, exist_ok=True)
 
-    correct_indices = np.where(val_preds == y_val)[0]
-    incorrect_indices = np.where(val_preds != y_val)[0]
+    incorrect_indices = np.where(test_preds != y_test)[0]
+    records = []
+
+    print(f"\n[MISCLASSIFICATION ANALYSIS] Found {len(incorrect_indices)} misclassified test images out of {len(y_test)}.")
+
+    for idx in incorrect_indices:
+        actual_label = IDX_TO_CLASS[y_test[idx]]
+        pred_label = IDX_TO_CLASS[test_preds[idx]]
+        prob_dog = float(test_probs[idx])
+        conf = prob_dog if pred_label == "dog" else (1.0 - prob_dog)
+        src_path = paths_test[idx]
+        fname = os.path.basename(src_path)
+
+        # Copy image to misclassified folder
+        dest_filename = f"error_{idx:03d}_{actual_label}_pred_as_{pred_label}_{fname}"
+        dest_path = os.path.join(misclassified_dir, dest_filename)
+        try:
+            shutil.copyfile(src_path, dest_path)
+        except Exception:
+            pass
+
+        records.append({
+            "image_filename": fname,
+            "source_path": src_path,
+            "actual_class": actual_label,
+            "predicted_class": pred_label,
+            "confidence": round(conf * 100.0, 2),
+            "dog_probability": round(prob_dog, 5),
+            "cat_probability": round((1.0 - prob_dog), 5),
+            "is_uncertain": bool(conf < UNCERTAINTY_THRESHOLD)
+        })
+
+    # Save CSV
+    df = pd.DataFrame(records)
+    df.to_csv(csv_path, index=False)
+    print(f"[REPORT] Misclassification records saved to: {csv_path}")
+
+    # Generate Visual Grid of Misclassified Images
+    if len(incorrect_indices) > 0:
+        cols = min(4, len(incorrect_indices))
+        rows = int(np.ceil(len(incorrect_indices) / cols))
+        fig, axes = plt.subplots(rows, cols, figsize=(4 * cols, 4 * rows))
+        if rows == 1 and cols == 1:
+            axes = np.array([axes])
+        axes = np.array(axes).reshape(-1)
+
+        for i, idx in enumerate(incorrect_indices):
+            ax = axes[i]
+            ax.imshow(X_test[idx])
+            actual_label = IDX_TO_CLASS[y_test[idx]]
+            pred_label = IDX_TO_CLASS[test_preds[idx]]
+            prob_dog = float(test_probs[idx])
+            conf = prob_dog if pred_label == "dog" else (1.0 - prob_dog)
+            ax.set_title(
+                f"Actual: {actual_label.upper()}\nPred: {pred_label.upper()} ({conf*100:.1f}%)",
+                color='red',
+                fontsize=10,
+                fontweight='bold'
+            )
+            ax.axis('off')
+
+        # Turn off extra subplots
+        for j in range(len(incorrect_indices), len(axes)):
+            axes[j].axis('off')
+
+        plt.suptitle("Misclassified Test Images Error Analysis", fontsize=14, fontweight='bold')
+        plt.tight_layout()
+        plt.savefig(grid_output_path, dpi=300)
+        plt.close()
+        print(f"[PLOT] Misclassification visual grid saved to: {grid_output_path}")
+    else:
+        # Create a clean placeholder if zero errors
+        fig, ax = plt.subplots(figsize=(6, 2))
+        ax.text(0.5, 0.5, "Zero Misclassified Samples on Test Set (100% Test Accuracy)",
+                ha='center', va='center', fontsize=12, color='green', fontweight='bold')
+        ax.axis('off')
+        plt.savefig(grid_output_path, dpi=200)
+        plt.close()
+
+
+def plot_test_predictions(X_test, y_test, test_probs, test_preds, output_path):
+    """
+    Visualizes a representative grid of test predictions with actual vs predicted labels.
+    """
+    num_samples = min(8, len(y_test))
+    if num_samples == 0:
+        return
 
     fig, axes = plt.subplots(2, 4, figsize=(16, 8))
-    fig.suptitle("Validation Sample Predictions", fontsize=16, fontweight='bold')
+    axes = axes.ravel()
 
-    # Show 4 correct predictions
-    sample_correct = np.random.choice(correct_indices, min(4, len(correct_indices)), replace=False)
-    for i, idx in enumerate(sample_correct):
-        ax = axes[0, i]
-        ax.imshow(X_val[idx])
-        actual_label = class_names[y_val[idx]]
-        pred_label = class_names[val_preds[idx]]
-        conf = val_probs[idx] if val_preds[idx] == 1 else (1.0 - val_probs[idx])
-        ax.set_title(f"Actual: {actual_label}\nPred: {pred_label}\nConf: {conf*100:.1f}%", color='green', fontsize=10)
+    sample_indices = np.random.choice(len(y_test), num_samples, replace=False)
+
+    for i, idx in enumerate(sample_indices):
+        ax = axes[i]
+        ax.imshow(X_test[idx])
+        actual = IDX_TO_CLASS[y_test[idx]]
+        pred = IDX_TO_CLASS[test_preds[idx]]
+        is_correct = (y_test[idx] == test_preds[idx])
+        conf = test_probs[idx] if pred == "dog" else (1.0 - test_probs[idx])
+
+        color = '#10b981' if is_correct else '#f43f5e'
+        ax.set_title(f"Actual: {actual}\nPred: {pred} ({conf*100:.1f}%)", color=color, fontsize=11, fontweight='bold')
         ax.axis('off')
 
-    # Show 4 misclassified or remaining predictions
-    if len(incorrect_indices) > 0:
-        sample_inc = np.random.choice(incorrect_indices, min(4, len(incorrect_indices)), replace=False)
-        for i, idx in enumerate(sample_inc):
-            ax = axes[1, i]
-            ax.imshow(X_val[idx])
-            actual_label = class_names[y_val[idx]]
-            pred_label = class_names[val_preds[idx]]
-            conf = val_probs[idx] if val_preds[idx] == 1 else (1.0 - val_probs[idx])
-            ax.set_title(f"Actual: {actual_label}\nPred: {pred_label}\nConf: {conf*100:.1f}%", color='red', fontsize=10)
-            ax.axis('off')
-    else:
-        # Fill remaining slots if 100% accurate
-        sample_rem = np.random.choice(correct_indices, min(4, len(correct_indices)), replace=False)
-        for i, idx in enumerate(sample_rem):
-            ax = axes[1, i]
-            ax.imshow(X_val[idx])
-            actual_label = class_names[y_val[idx]]
-            pred_label = class_names[val_preds[idx]]
-            conf = val_probs[idx] if val_preds[idx] == 1 else (1.0 - val_probs[idx])
-            ax.set_title(f"Actual: {actual_label}\nPred: {pred_label}\nConf: {conf*100:.1f}%", color='green', fontsize=10)
-            ax.axis('off')
-
+    plt.suptitle("Isolated Test Set Predictions", fontsize=15, fontweight='bold')
     plt.tight_layout()
-    sample_plot_path = os.path.join(output_dir, "sample_predictions.png")
-    plt.savefig(sample_plot_path, dpi=300)
+    plt.savefig(output_path, dpi=300)
     plt.close()
-    print(f"[PLOT] Sample prediction visualization saved to: {sample_plot_path}")
+    print(f"[PLOT] Test prediction sample grid saved to: {output_path}")
 
 
 if __name__ == "__main__":
-    train_and_evaluate(epochs=15, batch_size=32, learning_rate=0.001)
+    train_and_evaluate_pipeline()

@@ -1,49 +1,113 @@
 """
 cat_dog_classifier / download_dataset.py
 -----------------------------------------
-Automated dataset helper script.
-Populates `dataset/cats/` and `dataset/dogs/` with sample images if a local dataset is missing.
+Expanded Real-World Cat and Dog Dataset Downloader.
+Downloads 100+ real photographic cat images and 100+ real photographic dog images
+across diverse breeds, poses, orientations, and backgrounds.
+Ensures zero synthetic doodles and strict SHA-256 deduplication.
 """
 
 import os
 import sys
-import urllib.request
-import numpy as np
-from PIL import Image, ImageDraw
+import io
+import time
+import hashlib
+import requests
+from PIL import Image
+
+try:
+    from config import CATS_DIR, DOGS_DIR, TEST_IMAGES_DIR, TEST_EXTERNAL_DIR, BASE_DIR
+except ImportError:
+    from cat_dog_classifier.config import CATS_DIR, DOGS_DIR, TEST_IMAGES_DIR, TEST_EXTERNAL_DIR, BASE_DIR
 
 # Ensure stdout supports UTF-8 on Windows consoles
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 
 
-def create_dataset_structure(base_dir="dataset"):
-    """Creates dataset/cats and dataset/dogs folders if missing."""
-    cats_dir = os.path.join(base_dir, "cats")
-    dogs_dir = os.path.join(base_dir, "dogs")
-    os.makedirs(cats_dir, exist_ok=True)
-    os.makedirs(dogs_dir, exist_ok=True)
-    return cats_dir, dogs_dir
+def get_existing_hashes(target_dir):
+    hashes = set()
+    if not os.path.exists(target_dir):
+        return hashes
+    for fname in os.listdir(target_dir):
+        fpath = os.path.join(target_dir, fname)
+        if os.path.isfile(fpath):
+            try:
+                with open(fpath, "rb") as f:
+                    hashes.add(hashlib.sha256(f.read()).hexdigest())
+            except Exception:
+                pass
+    return hashes
 
 
-def download_sample_images(base_dir="dataset", num_per_class=50):
-    """
-    Downloads or generates sample cat and dog images for testing and demonstration.
-    """
-    cats_dir, dogs_dir = create_dataset_structure(base_dir)
+def download_dog_images(target_dir, target_count=100):
+    os.makedirs(target_dir, exist_ok=True)
+    seen_hashes = get_existing_hashes(target_dir)
+    current_count = len([f for f in os.listdir(target_dir) if f.lower().endswith(('.jpg', '.png', '.jpeg'))])
+    
+    print(f"[DOGS] Current dog image count: {current_count}. Target: {target_count}")
+    headers = {"User-Agent": "Mozilla/5.0"}
 
-    existing_cats = [f for f in os.listdir(cats_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
-    existing_dogs = [f for f in os.listdir(dogs_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+    while current_count < target_count:
+        needed = min(50, target_count - current_count)
+        try:
+            r = requests.get(f"https://dog.ceo/api/breeds/image/random/{needed}", headers=headers, timeout=10)
+            if r.status_code == 200:
+                urls = r.json().get("message", [])
+                for url in urls:
+                    if current_count >= target_count:
+                        break
+                    try:
+                        img_resp = requests.get(url, headers=headers, timeout=8)
+                        if img_resp.status_code == 200 and len(img_resp.content) > 1024:
+                            fhash = hashlib.sha256(img_resp.content).hexdigest()
+                            if fhash in seen_hashes:
+                                continue
+                            
+                            # Verify valid image
+                            img = Image.open(io.BytesIO(img_resp.content)).convert("RGB")
+                            filename = f"dog_real_{current_count+1:04d}.jpg"
+                            filepath = os.path.join(target_dir, filename)
+                            img.save(filepath, "JPEG", quality=90)
+                            
+                            seen_hashes.add(fhash)
+                            current_count += 1
+                    except Exception:
+                        pass
+            time.sleep(0.5)
+        except Exception as e:
+            print(f"Dog API fetch error: {e}")
+            break
 
-    print(f"[DATASET] Current status: {len(existing_cats)} Cat images, {len(existing_dogs)} Dog images.")
+    print(f"[DOGS COMPLETE] Total {current_count} real dog photos in {target_dir}")
+    return current_count
 
-    if len(existing_cats) >= 20 and len(existing_dogs) >= 20:
-        print("[OK] Sufficient dataset already available!")
-        return
 
-    print("[INFO] Fetching/Generating sample Cat and Dog image dataset...")
+def download_cat_images(target_dir, target_count=100):
+    os.makedirs(target_dir, exist_ok=True)
+    seen_hashes = get_existing_hashes(target_dir)
+    current_count = len([f for f in os.listdir(target_dir) if f.lower().endswith(('.jpg', '.png', '.jpeg'))])
 
-    # Public domain sample images (Wikimedia Commons)
-    cat_urls = [
+    print(f"[CATS] Current cat image count: {current_count}. Target: {target_count}")
+    headers = {"User-Agent": "Mozilla/5.0"}
+
+    # Curated Wikimedia / Unsplash fallback list
+    fallback_cats = [
+        "https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba?auto=format&fit=crop&w=400&q=80",
+        "https://images.unsplash.com/photo-1573865526739-10659fec78a5?auto=format&fit=crop&w=400&q=80",
+        "https://images.unsplash.com/photo-1495360010541-f48722b34f7d?auto=format&fit=crop&w=400&q=80",
+        "https://images.unsplash.com/photo-1533738363-b7f9aef128ce?auto=format&fit=crop&w=400&q=80",
+        "https://images.unsplash.com/photo-1561948955-570b270e7c36?auto=format&fit=crop&w=400&q=80",
+        "https://images.unsplash.com/photo-1543852786-1cf6624b9987?auto=format&fit=crop&w=400&q=80",
+        "https://images.unsplash.com/photo-1518791841217-8f162f1e1131?auto=format&fit=crop&w=400&q=80",
+        "https://images.unsplash.com/photo-1535268647677-300dbf3d78d1?auto=format&fit=crop&w=400&q=80",
+        "https://images.unsplash.com/photo-1513360309081-38f0762daed1?auto=format&fit=crop&w=400&q=80",
+        "https://images.unsplash.com/photo-1519052537078-e6302a4968d4?auto=format&fit=crop&w=400&q=80",
+        "https://images.unsplash.com/photo-1548802673-380ab8ebc7b7?auto=format&fit=crop&w=400&q=80",
+        "https://images.unsplash.com/photo-1526336024174-e58f5cdd8e13?auto=format&fit=crop&w=400&q=80",
+        "https://images.unsplash.com/photo-1574158622682-e40e69881006?auto=format&fit=crop&w=400&q=80",
+        "https://images.unsplash.com/photo-1533743983669-94fa5c4338ec?auto=format&fit=crop&w=400&q=80",
+        "https://images.unsplash.com/photo-1511044568932-338cba0ad803?auto=format&fit=crop&w=400&q=80",
         "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Cat03.jpg/320px-Cat03.jpg",
         "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4d/Cat_November_2010-1a.jpg/320px-Cat_November_2010-1a.jpg",
         "https://upload.wikimedia.org/wikipedia/commons/thumb/b/bb/Kittens_in_a_basket.jpg/320px-Kittens_in_a_basket.jpg",
@@ -51,90 +115,83 @@ def download_sample_images(base_dir="dataset", num_per_class=50):
         "https://upload.wikimedia.org/wikipedia/commons/thumb/1/15/Cat_August_2010-4.jpg/320px-Cat_August_2010-4.jpg"
     ]
 
-    dog_urls = [
-        "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d9/Collesticker.jpg/320px-Collesticker.jpg",
-        "https://upload.wikimedia.org/wikipedia/commons/thumb/2/26/YellowLabradorLooking_new.jpg/320px-YellowLabradorLooking_new.jpg",
-        "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a4/German_Shepherd_Dog_header.jpg/320px-German_Shepherd_Dog_header.jpg",
-        "https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/Golden_retriever_flat-coated.jpg/320px-Golden_retriever_flat-coated.jpg",
-        "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c0/Golden_Retriever_multiview.jpg/320px-Golden_Retriever_multiview.jpg"
-    ]
+    for url in fallback_cats:
+        if current_count >= target_count:
+            break
+        try:
+            r = requests.get(url, headers=headers, timeout=8)
+            if r.status_code == 200 and len(r.content) > 1024:
+                fhash = hashlib.sha256(r.content).hexdigest()
+                if fhash not in seen_hashes:
+                    img = Image.open(io.BytesIO(r.content)).convert("RGB")
+                    filename = f"cat_real_{current_count+1:04d}.jpg"
+                    filepath = os.path.join(target_dir, filename)
+                    img.save(filepath, "JPEG", quality=90)
+                    seen_hashes.add(fhash)
+                    current_count += 1
+        except Exception:
+            pass
 
-    def fetch_urls(urls, target_dir, prefix):
-        downloaded = 0
-        for idx, url in enumerate(urls):
-            filepath = os.path.join(target_dir, f"{prefix}_web_{idx+1}.jpg")
-            try:
-                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(req, timeout=5) as resp, open(filepath, 'wb') as f:
-                    f.write(resp.read())
-                img = Image.open(filepath).convert('RGB')
-                img.resize((128, 128)).save(filepath)
-                downloaded += 1
-            except Exception as e:
-                pass
-        return downloaded
+    # Fetch from TheCatAPI in batches
+    retries = 0
+    while current_count < target_count and retries < 15:
+        try:
+            r = requests.get("https://api.thecatapi.com/v1/images/search?limit=10", headers=headers, timeout=8)
+            if r.status_code == 200:
+                items = r.json()
+                for item in items:
+                    url = item.get("url")
+                    if not url or current_count >= target_count:
+                        break
+                    try:
+                        img_resp = requests.get(url, headers=headers, timeout=8)
+                        if img_resp.status_code == 200 and len(img_resp.content) > 1024:
+                            fhash = hashlib.sha256(img_resp.content).hexdigest()
+                            if fhash in seen_hashes:
+                                continue
+                            img = Image.open(io.BytesIO(img_resp.content)).convert("RGB")
+                            filename = f"cat_real_{current_count+1:04d}.jpg"
+                            filepath = os.path.join(target_dir, filename)
+                            img.save(filepath, "JPEG", quality=90)
+                            seen_hashes.add(fhash)
+                            current_count += 1
+                    except Exception:
+                        pass
+            time.sleep(0.4)
+        except Exception as e:
+            retries += 1
+            time.sleep(1)
 
-    print("  Downloading public domain image samples...")
-    cats_dl = fetch_urls(cat_urls, cats_dir, "cat")
-    dogs_dl = fetch_urls(dog_urls, dogs_dir, "dog")
+    print(f"[CATS COMPLETE] Total {current_count} real cat photos in {target_dir}")
+    return current_count
 
-    # Generate synthetic diverse features to expand dataset
-    def generate_synthetic_samples(target_dir, prefix, label_type, count_needed):
-        current_count = len([f for f in os.listdir(target_dir) if f.startswith(prefix)])
-        np.random.seed(42 if label_type == 'cat' else 99)
 
-        for i in range(current_count, count_needed):
-            img = Image.new('RGB', (128, 128), color=(240, 240, 240))
-            draw = ImageDraw.Draw(img)
+def setup_real_dataset(target_per_class=100):
+    print("\n" + "="*60)
+    print(f" DOWNLOADING EXPANDED DIVERSE REAL PHOTO DATASET ({target_per_class}/class)")
+    print("="*60)
 
-            bg_r = np.random.randint(180, 255)
-            bg_g = np.random.randint(180, 255)
-            bg_b = np.random.randint(180, 255)
-            draw.rectangle([0, 0, 128, 128], fill=(bg_r, bg_g, bg_b))
+    # 1. Download base training/val/test data
+    download_cat_images(CATS_DIR, target_count=target_per_class)
+    download_dog_images(DOGS_DIR, target_count=target_per_class)
 
-            if label_type == 'cat':
-                # CAT FEATURES: Pointy triangular ears, slit eyes, whiskers, orange/tabby coat
-                color = (230, 120, 40) if i % 2 == 0 else (120, 120, 120)
-                draw.ellipse([34, 38, 94, 98], fill=color)
-                draw.polygon([(34, 48), (24, 18), (54, 38)], fill=(200, 80, 30))
-                draw.polygon([(94, 48), (104, 18), (74, 38)], fill=(200, 80, 30))
-                draw.ellipse([48, 54, 58, 66], fill=(50, 200, 50))
-                draw.ellipse([70, 54, 80, 66], fill=(50, 200, 50))
-                draw.polygon([(60, 72), (68, 72), (64, 76)], fill=(255, 150, 150))
-                draw.line([(64, 76), (40, 78)], fill=(0, 0, 0), width=1)
-                draw.line([(64, 76), (88, 78)], fill=(0, 0, 0), width=1)
-            else:
-                # DOG FEATURES: Floppy round ears, round dark eyes, broad snout, golden/brown coat
-                color = (180, 110, 50) if i % 2 == 0 else (50, 50, 50)
-                draw.ellipse([30, 30, 98, 98], fill=color)
-                draw.ellipse([18, 40, 40, 90], fill=(130, 70, 30))
-                draw.ellipse([88, 40, 110, 90], fill=(130, 70, 30))
-                draw.ellipse([46, 50, 58, 62], fill=(20, 20, 20))
-                draw.ellipse([70, 50, 82, 62], fill=(20, 20, 20))
-                draw.ellipse([48, 65, 80, 88], fill=(230, 210, 190))
-                draw.ellipse([58, 68, 70, 76], fill=(10, 10, 10))
+    # 2. Setup External Sanity Test Suite
+    ext_cats = os.path.join(TEST_EXTERNAL_DIR, "cats")
+    ext_dogs = os.path.join(TEST_EXTERNAL_DIR, "dogs")
+    download_cat_images(ext_cats, target_count=10)
+    download_dog_images(ext_dogs, target_count=10)
 
-            noise = np.random.randint(-15, 15, (128, 128, 3))
-            arr = np.array(img, dtype=np.int16) + noise
-            arr = np.clip(arr, 0, 255).astype(np.uint8)
-            final_img = Image.fromarray(arr)
+    # 3. Setup sample test images
+    os.makedirs(TEST_IMAGES_DIR, exist_ok=True)
+    cat_files = [f for f in os.listdir(CATS_DIR) if f.endswith('.jpg')]
+    dog_files = [f for f in os.listdir(DOGS_DIR) if f.endswith('.jpg')]
+    if cat_files:
+        Image.open(os.path.join(CATS_DIR, cat_files[0])).save(os.path.join(TEST_IMAGES_DIR, "sample_cat_1.jpg"))
+    if dog_files:
+        Image.open(os.path.join(DOGS_DIR, dog_files[0])).save(os.path.join(TEST_IMAGES_DIR, "sample_dog_1.jpg"))
 
-            filepath = os.path.join(target_dir, f"{prefix}_{i+1}.jpg")
-            final_img.save(filepath, quality=95)
-
-    generate_synthetic_samples(cats_dir, "cat", "cat", num_per_class)
-    generate_synthetic_samples(dogs_dir, "dog", "dog", num_per_class)
-
-    # Generate separate test images
-    test_dir = os.path.join(base_dir, "..", "test_images") if os.path.basename(base_dir) == "dataset" else "test_images"
-    os.makedirs(test_dir, exist_ok=True)
-    generate_synthetic_samples(test_dir, "sample_cat", "cat", 2)
-    generate_synthetic_samples(test_dir, "sample_dog", "dog", 2)
-
-    total_cats = len([f for f in os.listdir(cats_dir) if f.endswith('.jpg')])
-    total_dogs = len([f for f in os.listdir(dogs_dir) if f.endswith('.jpg')])
-    print(f"[DATASET READY] {total_cats} Cats in dataset/cats/, {total_dogs} Dogs in dataset/dogs/")
+    print("="*60 + "\n")
 
 
 if __name__ == "__main__":
-    download_sample_images(num_per_class=50)
+    setup_real_dataset(target_per_class=100)

@@ -1,0 +1,16 @@
+image_filename,source_path,actual_class,predicted_class,confidence,dog_probability,cat_probability,is_uncertain
+dog_real_0062.jpg,C:\Users\pak\OneDrive\Desktop\catNdog\dataset\dogs\dog_real_0062.jpg,dog,cat,55.17,0.44833,0.55167,True
+dog_real_0092.jpg,C:\Users\pak\OneDrive\Desktop\catNdog\dataset\dogs\dog_real_0092.jpg,dog,cat,55.17,0.44833,0.55167,True
+dog_real_0033.jpg,C:\Users\pak\OneDrive\Desktop\catNdog\dataset\dogs\dog_real_0033.jpg,dog,cat,55.12,0.44878,0.55122,True
+dog_real_0081.jpg,C:\Users\pak\OneDrive\Desktop\catNdog\dataset\dogs\dog_real_0081.jpg,dog,cat,55.34,0.44662,0.55338,True
+dog_real_0069.jpg,C:\Users\pak\OneDrive\Desktop\catNdog\dataset\dogs\dog_real_0069.jpg,dog,cat,55.16,0.44844,0.55156,True
+dog_real_0065.jpg,C:\Users\pak\OneDrive\Desktop\catNdog\dataset\dogs\dog_real_0065.jpg,dog,cat,55.47,0.44534,0.55466,True
+dog_real_0068.jpg,C:\Users\pak\OneDrive\Desktop\catNdog\dataset\dogs\dog_real_0068.jpg,dog,cat,55.32,0.44682,0.55318,True
+dog_real_0046.jpg,C:\Users\pak\OneDrive\Desktop\catNdog\dataset\dogs\dog_real_0046.jpg,dog,cat,55.22,0.44776,0.55224,True
+dog_real_0050.jpg,C:\Users\pak\OneDrive\Desktop\catNdog\dataset\dogs\dog_real_0050.jpg,dog,cat,55.08,0.44923,0.55077,True
+dog_real_0084.jpg,C:\Users\pak\OneDrive\Desktop\catNdog\dataset\dogs\dog_real_0084.jpg,dog,cat,55.41,0.44586,0.55414,True
+dog_real_026.jpg,C:\Users\pak\OneDrive\Desktop\catNdog\dataset\dogs\dog_real_026.jpg,dog,cat,55.05,0.44954,0.55046,True
+dog_real_0036.jpg,C:\Users\pak\OneDrive\Desktop\catNdog\dataset\dogs\dog_real_0036.jpg,dog,cat,55.33,0.44667,0.55333,True
+dog_real_0097.jpg,C:\Users\pak\OneDrive\Desktop\catNdog\dataset\dogs\dog_real_0097.jpg,dog,cat,55.53,0.44472,0.55528,True
+dog_real_023.jpg,C:\Users\pak\OneDrive\Desktop\catNdog\dataset\dogs\dog_real_023.jpg,dog,cat,55.4,0.44604,0.55396,True
+dog_real_0059.jpg,C:\Users\pak\OneDrive\Desktop\catNdog\dataset\dogs\dog_real_0059.jpg,dog,cat,55.26,0.44744,0.55256,True

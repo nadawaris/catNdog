@@ -1,16 +1,16 @@
 """
 cat_dog_classifier / predict.py
 --------------------------------
-Inference module for single image prediction.
+Single image inference module using unified preprocessing and confidence calibration.
 
 Usage:
 ------
-1. As a Python module:
-    from predict import predict_image
-    predict_image("path/to/image.jpg")
+1. CLI:
+   python predict.py test_images/sample_cat_1.jpg
 
-2. From Command Line (CLI):
-    python predict.py test_images/sample_cat_1.jpg
+2. In Python:
+   from predict import predict_image
+   result = predict_image("path/to/img.jpg")
 """
 
 import os
@@ -19,101 +19,112 @@ import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
-import tensorflow as tf
+import torch
 
-# Ensure stdout supports UTF-8 on Windows consoles
+# Ensure stdout supports UTF-8
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 
+try:
+    from config import (
+        MODEL_PATH, IDX_TO_CLASS, CLASS_EMOJIS,
+        DECISION_THRESHOLD, UNCERTAINTY_THRESHOLD,
+        OUTPUTS_DIR
+    )
+    from preprocessing import preprocess_for_inference
+    from model import build_cat_dog_cnn
+except ImportError:
+    from cat_dog_classifier.config import (
+        MODEL_PATH, IDX_TO_CLASS, CLASS_EMOJIS,
+        DECISION_THRESHOLD, UNCERTAINTY_THRESHOLD,
+        OUTPUTS_DIR
+    )
+    from cat_dog_classifier.preprocessing import preprocess_for_inference
+    from cat_dog_classifier.model import build_cat_dog_cnn
 
-def predict_image(image_path, model_path="models/cat_dog_cnn.keras", show_plot=True, save_plot_path="outputs/last_prediction.png"):
+
+def predict_image(
+    image_path,
+    model_path=MODEL_PATH,
+    show_plot=True,
+    save_plot_path=os.path.join(OUTPUTS_DIR, "last_prediction.png")
+):
     """
-    Classifies a single input image into Cat (0) or Dog (1) using the trained custom CNN.
-
-    Parameters:
-    -----------
-    image_path : str
-        Path to the input image file (.jpg, .jpeg, .png).
-    model_path : str
-        Path to the saved Keras model file.
-    show_plot : bool
-        Whether to render the Matplotlib figure plot.
-    save_plot_path : str
-        File path to save the output visualization with prediction overlay.
-
-    Returns:
-    --------
-    dict
-        Dictionary containing label ('Cat'/'Dog'), confidence percentage, and raw sigmoid score.
+    Classifies a single input image with confidence calibration and uncertainty check.
     """
-
-    # 1. Validate paths
     if not os.path.exists(image_path):
-        raise FileNotFoundError(f"[ERROR] Image not found at path: {image_path}")
+        raise FileNotFoundError(f"[ERROR] Image file does not exist: {image_path}")
 
     if not os.path.exists(model_path):
-        parent_model_path = os.path.join("cat_dog_classifier", model_path)
-        if os.path.exists(parent_model_path):
-            model_path = parent_model_path
+        parent_model = os.path.join("cat_dog_classifier", model_path)
+        if os.path.exists(parent_model):
+            model_path = parent_model
         else:
-            raise FileNotFoundError(
-                f"[ERROR] Saved model file not found at '{model_path}'. "
-                f"Please run 'python train.py' first to train and save the model."
-            )
+            raise FileNotFoundError(f"[ERROR] Model file not found at {model_path}. Run train.py first.")
 
-    # 2. Load Trained Model
-    model = tf.keras.models.load_model(model_path)
+    # 1. Load Model
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = build_cat_dog_cnn().to(device)
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.eval()
 
-    # 3. Preprocess Input Image
-    raw_img = Image.open(image_path).convert("RGB")
-    resized_img = raw_img.resize((128, 128))
-    img_array = np.array(resized_img, dtype=np.float32) / 255.0
-    input_tensor = np.expand_dims(img_array, axis=0)
+    # 2. Preprocess with Unified Pipeline
+    input_tensor = preprocess_for_inference(image_path).to(device)
 
-    # 4. Pass through CNN for Inference
-    raw_prediction = model.predict(input_tensor, verbose=0)[0][0]
+    # 3. Model Inference
+    with torch.no_grad():
+        raw_sigmoid = float(model(input_tensor)[0][0].item())
 
-    # 5. Interpret Sigmoid Output
-    if raw_prediction >= 0.5:
-        label = "DOG"
-        class_name = "Dog"
-        confidence = float(raw_prediction) * 100.0
+    # 4. Probabilities
+    dog_prob = raw_sigmoid
+    cat_prob = 1.0 - raw_sigmoid
+
+    if dog_prob >= DECISION_THRESHOLD:
+        pred_class = "dog"
+        confidence = dog_prob * 100.0
     else:
-        label = "CAT"
-        class_name = "Cat"
-        confidence = (1.0 - float(raw_prediction)) * 100.0
+        pred_class = "cat"
+        confidence = cat_prob * 100.0
 
-    # 6. Display Console Summary
-    print("\n" + "="*45)
+    is_uncertain = bool((confidence / 100.0) < UNCERTAINTY_THRESHOLD)
+    emoji = CLASS_EMOJIS.get(pred_class, "🐾") if not is_uncertain else CLASS_EMOJIS["uncertain"]
+    verdict_label = pred_class.upper() if not is_uncertain else f"{pred_class.upper()} (UNCERTAIN)"
+
+    # 5. Console Output
+    print("\n" + "="*50)
     print(" BINARY IMAGE CLASSIFICATION RESULT")
-    print("="*45)
-    print(f"  Image Path  : {image_path}")
-    print(f"  Prediction  : {label}")
-    print(f"  Confidence  : {confidence:.2f}%")
-    print(f"  Raw Sigmoid : {raw_prediction:.4f}")
-    print("="*45 + "\n")
+    print("="*50)
+    print(f"  Image Path       : {image_path}")
+    print(f"  Prediction       : {verdict_label} {emoji}")
+    print(f"  Confidence       : {confidence:.2f}%")
+    print(f"  Cat Probability  : {cat_prob*100:.2f}%")
+    print(f"  Dog Probability  : {dog_prob*100:.2f}%")
+    print(f"  Raw Sigmoid      : {raw_sigmoid:.5f}")
+    print(f"  Uncertainty Flag : {is_uncertain} (Threshold: {UNCERTAINTY_THRESHOLD*100:.0f}%)")
+    print("="*50 + "\n")
 
-    # 7. Visualization Plot
+    # 6. Plotting
+    raw_img = Image.open(image_path).convert("RGB")
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.imshow(raw_img)
     ax.axis("off")
 
-    title_text = f"Prediction: {label}\nConfidence: {confidence:.1f}%"
-    box_color = '#d4edda' if class_name == "Dog" else '#fff3cd'
-    edge_color = '#28a745' if class_name == "Dog" else '#ffc107'
+    color_box = '#fee2e2' if is_uncertain else ('#dcfce7' if pred_class == 'dog' else '#fef3c7')
+    color_edge = '#ef4444' if is_uncertain else ('#22c55e' if pred_class == 'dog' else '#f59e0b')
 
+    title_text = f"Prediction: {verdict_label}\nConfidence: {confidence:.1f}%\n(Cat: {cat_prob*100:.1f}% | Dog: {dog_prob*100:.1f}%)"
     ax.set_title(
         title_text,
-        fontsize=14,
+        fontsize=12,
         fontweight='bold',
         pad=15,
-        bbox=dict(boxstyle='round,pad=0.5', facecolor=box_color, edgecolor=edge_color, linewidth=2)
+        bbox=dict(boxstyle='round,pad=0.5', facecolor=color_box, edgecolor=color_edge, linewidth=2)
     )
 
     if save_plot_path:
         os.makedirs(os.path.dirname(save_plot_path), exist_ok=True)
         plt.savefig(save_plot_path, bbox_inches='tight', dpi=300)
-        print(f"[PLOT] Prediction visualization saved to: {save_plot_path}")
+        print(f"[PLOT] Prediction visual saved to: {save_plot_path}")
 
     if show_plot:
         plt.show()
@@ -121,43 +132,34 @@ def predict_image(image_path, model_path="models/cat_dog_cnn.keras", show_plot=T
         plt.close()
 
     return {
-        "class": class_name,
-        "label": label,
+        "prediction": pred_class,
+        "label": verdict_label,
+        "emoji": emoji,
         "confidence": round(confidence, 2),
-        "raw_score": float(raw_prediction)
+        "cat_probability": round(cat_prob, 5),
+        "dog_probability": round(dog_prob, 5),
+        "raw_sigmoid": round(raw_sigmoid, 5),
+        "is_uncertain": is_uncertain
     }
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Predict Cat or Dog from an input image.")
-    parser.add_argument("image", nargs="?", default=None, help="Path to input image file.")
-    parser.add_argument("--image", dest="image_opt", default=None, help="Path to input image file.")
-    parser.add_argument("--model", default="models/cat_dog_cnn.keras", help="Path to saved .keras model.")
+    parser = argparse.ArgumentParser(description="Predict Cat vs Dog using trained CNN.")
+    parser.add_argument("image", nargs="?", default=None, help="Path to image file.")
+    parser.add_argument("--model", default=MODEL_PATH, help="Path to saved model.")
     parser.add_argument("--no-show", action="store_true", help="Disable interactive plot popup.")
 
     args = parser.parse_args()
-    img_path = args.image or args.image_opt
+    img_path = args.image
 
     if not img_path:
-        default_tests = [
-            "test_images/sample_cat_1.jpg",
-            "test_images/sample_dog_1.jpg",
-            "../test_images/sample_cat_1.jpg",
-            "cat_dog_classifier/test_images/sample_cat_1.jpg"
-        ]
-        for p in default_tests:
+        for p in ["test_images/sample_dog_1.jpg", "test_images/sample_cat_1.jpg"]:
             if os.path.exists(p):
                 img_path = p
                 break
 
     if not img_path or not os.path.exists(img_path):
-        print("[WARNING] No image specified or found! Generating sample dataset & test image...")
-        from download_dataset import download_sample_images
-        download_sample_images(num_per_class=10)
-        img_path = "test_images/sample_cat_1.jpg"
+        print("[ERROR] Please provide an image path: python predict.py path/to/image.jpg")
+        sys.exit(1)
 
-    predict_image(
-        image_path=img_path,
-        model_path=args.model,
-        show_plot=not args.no_show
-    )
+    predict_image(img_path, model_path=args.model, show_plot=not args.no_show)
